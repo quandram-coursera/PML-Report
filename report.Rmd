@@ -1,0 +1,164 @@
+---
+title: 'Practical Machine Learning report'
+author: "James Longman"
+date: "Friday, June 19, 2015"
+output: html_document
+---
+
+### Brief
+
+This report explores the steps taken to build and test a model for predicting how users exercised based upon the measurements taken by their wearable technology.
+
+### Exploratory analysis, cleaning and partitioning
+
+The dimensions of the dataset is:
+``` {r, echo=FALSE, message=FALSE}
+
+library(caret)
+library(doParallel)
+library(rattle)
+library(randomForest)
+library(ISLR)
+library(gbm)
+library(plyr)
+library(rpart)
+
+set.seed(214)
+
+oData <- read.csv("./pml-training.csv")
+dim(oData)
+
+```
+
+This is a large number of variables to consider but some basic analysis reveals that there are several things that can be done to remove variables that will prove to be poor predictors.
+
+The following types of variables are not deemed to offer any predictive value:
+
+* Columns with a large % of blank data
+* Columns with a large % of NA values
+* Columns with descriptive data (names, identifiers, times)
+
+This is done with a combination of approaches including writing a function and some grep.
+
+``` {r}
+
+oData <- oData[,-grep("window|time|kurtosis|skewness|amplitude|max_yaw|min_yaw",colnames(oData))]
+idx <- apply(oData, 2, function(x) 0.95<(sum(is.na(x))/nrow(oData)))
+oData <- oData[,!idx]
+oData <- oData[,c(-1,-2)]
+
+```
+
+This leaves us with a reduced dataset with the dimensions of: 
+
+``` {r}
+
+dim(oData)
+
+```
+
+The dataset was then split in to training and testing partitions to allow for validation fo the model.
+
+``` {r}
+
+idx <- createDataPartition(y=oData$classe, p=0.7, list=FALSE)
+dTrain <- oData[idx,]
+dTest <- oData[-idx,]
+
+```
+
+### Model training
+
+Initially I tried a basic Tree model which did a reasonable job of predicting two of the classes when evaluated but with a poor overall accuracy this approach was discarded.
+
+
+``` {r,echo=FALSE}
+
+mTrees <- train(classe ~ ., method="rpart", data=dTrain)
+fancyRpartPlot(mTrees$finalModel)
+mTrees
+
+```
+
+Next I tried a random Forest approach.  This generated a model with a much greater accuracy as can be seen from the confusion matrix.
+
+``` {r}
+
+mForest <- randomForest(classe ~ ., data = dTrain, ntree = 1000)
+mForest
+
+```
+
+### Cross validation and error evaluation
+
+With a good base accuracy for the model approach I employed k-fold cross validation to establish a decent approximation for the out-of-scope error rate.
+
+I used three folds and looped through the model generation and prediction gathering which resulted in a prediction accuracy summary of:
+
+``` {r, echo=FALSE}
+
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+```
+
+``` {r}
+thisPrediction <- data.frame()
+thisTestSet <- data.frame()
+
+idxClasse <- grep("^classe$", colnames(dTrain))
+flds <- createFolds(y=dTrain$classe, k = 3, list = TRUE, returnTrain = FALSE)
+
+for (tempI in 1:length(flds)){
+    tempTrain <- dTrain[-flds[[tempI]],]
+    tempTest <- dTrain[flds[[tempI]],]
+    
+    thisModel <- randomForest(tempTrain$classe ~ ., data = tempTrain, ntree = 1000)
+    
+    tempResult <- as.data.frame(predict(thisModel, tempTest[,-idxClasse]))
+    
+    thisPrediction <- rbind(thisPrediction, tempResult)
+    
+    thisTestSet <- rbind(thisTestSet, as.data.frame(tempTest$classe))
+    
+}
+
+thisResult <- cbind(thisPrediction, thisTestSet)
+names(thisResult) <- c("Prediction", "Actual")
+thisResult$correctPrediction <- thisResult$Actual == thisResult$Prediction
+
+summary(thisResult$correctPrediction)
+```
+
+``` {r,echo=FALSE,message=FALSE}
+
+rm(list=ls()[grep("^temp",ls())])
+
+stopCluster(cl)
+
+```
+
+Which calculates down to be a percentage error of:
+
+``` {r, echo=FALSE}
+
+nrow(thisResult[thisResult$correctPrediction==FALSE,])/nrow(thisResult[thisResult$correctPrediction==TRUE,])
+
+```
+
+### Testing the model
+
+Having established a method for creating a model which looked like it would provide highly accurate results and has been verified by cross validation I tested the model on the previously created dTest partition.
+
+``` {r, echo=FALSE}
+
+thisPrediction <- predict(thisModel, dTest)
+dTest$correctPrediction <- thisPrediction==dTest$classe
+table(thisPrediction,dTest$classe)
+summary(dTest$correctPrediction)
+nrow(dTest[dTest$correctPrediction==FALSE,])/nrow(dTest[dTest$correctPrediction==TRUE,])
+
+
+```
+
+This set of results validated that the model predicts with a high degree of accuracy.
